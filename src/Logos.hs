@@ -1,3 +1,5 @@
-module Logos where
+module Main where
 
 import Logos.Syntax
+
+main = test

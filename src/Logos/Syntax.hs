@@ -1,19 +1,45 @@
-{-# LANGUAGE LambdaCase #-}
+{-# LANGUAGE LambdaCase, GADTs #-}
 
 module Logos.Syntax where
 
 import qualified Data.Map as Map
 import Data.Map (Map)
 import Control.Monad.Reader
-import Data.List (subsequences, intercalate)
+import Data.List (subsequences, intercalate, sort)
 import Data.Maybe (isJust, fromJust)
+
+data TruthTable = TT [String] [[Bool]]
+
+instance Show TruthTable where
+  show tt@(TT vars values) | validTT tt
+    = concat [roof title,
+              '\n':title,
+              divider title,
+              body,
+              bottom title]
+    where roof str = concat ["\n┌", replicate (length str - 2) '─', "┐"]
+          title = concat ["│ ", intercalate " │ " vars, " │"]
+          divider str = concat [
+            "\n│", map (\x -> if x == '│' then '+' else '-') . init . tail $ str,
+             "│"]
+          body  = concatMap (wrap . intercalate " │ " . map boolChr) values
+          wrap str = concat ["\n│ ", str, " │"]
+          bottom str = concat ["\n└", replicate (length str - 2) '─', "┘"]
+          boolChr True  = "T"
+          boolChr False = "F"
+  show _  = error "Not a valid truth table!"
+
+validTT (TT vars vals) = all ((== vl) . length) vals
+  where vl = length vars
 
 -- Environment
 type Env = Reader (Map String Bool)
 
 data Expr
   = And Expr Expr
+  | NAnd Expr Expr
   | Or Expr Expr
+  | NOr Expr Expr
   | Impl Expr Expr
   | Neg Expr
   | T
@@ -32,9 +58,12 @@ eval = \case
 
   Neg ex -> not <$> eval ex
 
+  NAnd e1 e2 -> eval $ Neg (e1 `And` e2)
+  NOr  e1 e2 -> eval $ Neg (e1 `Or` e2)
+
   And  e1 e2 -> and <$> mapM eval [e1, e2]
   Or   e1 e2 -> or  <$> mapM eval [e1, e2]
-  Impl e1 e2 -> eval $ Or e2 $ Neg e2
+  Impl e1 e2 -> eval $ Neg e1 `Or` e2
 
 runEval :: [(String, Bool)] -> Expr -> Bool
 runEval env = flip runReader (Map.fromList env) . eval
@@ -42,34 +71,39 @@ runEval env = flip runReader (Map.fromList env) . eval
 find :: String -> Env Bool
 find var = Map.lookup var <$> ask >>= \case
   Just v -> return v
-  Nothing -> error $ concat [var, " is not defined!"]
+  Nothing -> error $ var ++ " is not defined!"
 
 searchVars :: Expr -> [String]
-searchVars = \case
-  And e1 e2 -> searchVars e1 ++ searchVars e2
-  Or e1 e2 -> searchVars e1 ++ searchVars e2
-  Impl e1 e2 -> searchVars e1 ++ searchVars e2
-  Neg e -> searchVars e
-  T -> []
-  F -> []
-  Var str -> return str
+searchVars = uniq . search
+  where search = \case
+          NAnd e1 e2 -> search e1 ++ search e2
+          And e1 e2 -> search e1 ++ search e2
+          NOr e1 e2 -> search e1 ++ search e2
+          Or e1 e2 -> search e1 ++ search e2
+          Impl e1 e2 -> search e1 ++ search e2
+          Neg e -> search e
+          T -> []
+          F -> []
+          Var str -> return str
+        uniq = uniq' . sort
+        uniq' = \case
+          (x:y:xs) | x == y    -> uniq' (y:xs)
+                   | otherwise -> x: uniq'(y:xs)
+          xs -> xs
 
-truthTable :: [[(String, Bool)]] -> IO ()
-truthTable tt = do
-  let title = intercalate " | " $ map fst $ head tt
-      boolChr t = if t then "T" else "F"
-      truthValues = map (intercalate " | " . map (boolChr . snd)) tt
-  putStrLn title
-  mapM_ putStrLn truthValues
+truthTable :: [[(String, Bool)]] -> TruthTable
+truthTable tt = TT vars values
+  where vars = map fst $ head tt
+        values = map (map snd) tt
 
 solveSystem :: System -> [[(String, Bool)]]
 solveSystem (System pred hypothesis)
   = map fromJust
     $ filter isJust
     $ flip map table
-    $ \env -> case and $ map (runEval env) (hypothesis:pred) of
-                True -> Just env
-                False -> Nothing
+    $ \env -> if all (runEval env) (hypothesis:pred)
+              then Just env
+              else Nothing
   where vars = concatMap searchVars pred
         table = possibilities vars
 
@@ -79,11 +113,12 @@ possibilities strs = map truthValues $ subsequences strs
 
 ex = (Var "x" `Impl` Var "y")
 
-test = do
-  let tests = [
-        ("a => b", Var "a" `Impl` Var "b"),
-        ("a && b", Var "a" `And` Var "b"),
-        ("a || b", Var "a" `Or` Var "b")
-        ]
-
-  mapM_ (\(t, l) -> mapM_ putStrLn ["", t, "_______"] >> truthTable (solveSystem $ System [l] T)) tests
+test = mapM_ printTest [
+  ("a => b", Var "a" `Impl` Var "b"),
+  ("a && b", Var "a" `And` Var "b"),
+  ("a || b", Var "a" `Or` Var "b"),
+  ("!a || b", (Neg $ Var "a") `Or` Var "b"),
+  ("(a => b) `NAnd` (!a || b)", (Var "a" `Impl` Var "b") `NAnd` ((Neg $ Var "a") `Or` Var "b"))]
+  where printTest (t, l) = do
+          putStrLn $ "\n" ++ t
+          print $ truthTable (solveSystem $ System [l] T)
