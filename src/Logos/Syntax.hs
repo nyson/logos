@@ -58,12 +58,14 @@ eval = \case
 
   Neg ex -> not <$> eval ex
 
-  NAnd e1 e2 -> eval $ Neg (e1 `And` e2)
-  NOr  e1 e2 -> eval $ Neg (e1 `Or` e2)
+  NAnd e1 e2 -> not . and <$> mapM eval [e1, e2]
+  NOr  e1 e2 -> not . or  <$> mapM eval [e1, e2]
 
   And  e1 e2 -> and <$> mapM eval [e1, e2]
   Or   e1 e2 -> or  <$> mapM eval [e1, e2]
-  Impl e1 e2 -> eval $ Neg e1 `Or` e2
+  Impl e1 e2 -> do
+    [a, b] <- mapM eval [e1, e2]
+    return $ not a || b
 
 runEval :: [(String, Bool)] -> Expr -> Bool
 runEval env = flip runReader (Map.fromList env) . eval
@@ -111,14 +113,15 @@ possibilities :: [String] -> [[(String, Bool)]]
 possibilities strs = map truthValues $ subsequences strs
   where truthValues ss = map (\s -> (s, s `elem` ss)) strs
 
-ex = (Var "x" `Impl` Var "y")
+ex = (Var "a" `Impl` Var "b") `NAnd` (Neg (Var "a") `Or` Var "b")
 
 test = mapM_ printTest [
   ("a => b", Var "a" `Impl` Var "b"),
   ("a && b", Var "a" `And` Var "b"),
   ("a || b", Var "a" `Or` Var "b"),
-  ("!a || b", (Neg $ Var "a") `Or` Var "b"),
-  ("(a => b) `NAnd` (!a || b)", (Var "a" `Impl` Var "b") `NAnd` ((Neg $ Var "a") `Or` Var "b"))]
+  ("!a || b", (Neg $ Var "a") `Or` Var "b")
+  ]
   where printTest (t, l) = do
           putStrLn $ "\n" ++ t
           print $ truthTable (solveSystem $ System [l] T)
+
